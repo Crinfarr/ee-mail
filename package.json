@@ -17,6 +17,7 @@
     "wrangler": "^4.157.0"
   },
   "dependencies": {
-    "bimi-url": "^1.0.5"
+    "bimi-url": "^1.0.5",
+    "postal-mime": "^4.2.0"
   }
 }

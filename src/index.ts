@@ -1,6 +1,7 @@
 const MAX_MSG_LEN = 1500;
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 import createGetLogo from 'bimi-url';
+import PostalMime from 'postal-mime';
 let get_bimi_logo = createGetLogo();
 
 export default {
@@ -11,34 +12,36 @@ export default {
 			console.warn(`Ignoring message to ${message.to}`);
 			return;
 		}
-		console.info(`New email from ${message.from} at ${new Date().toISOString()}`);
+		//populate body
+		let message_content = await PostalMime.parse(message.raw);
+		let body_text = "";
+		if (message_content.subject) body_text += `-# Subject: \`${message_content.subject}\``;
+
 		let body = new FormData();
-		body.append('username', `From: ${message.from}, to: ${message.to}`.substring(0, 80)); //fit in discord name limits
+		if (message_content.from?.name && message_content.from.address) {
+			body.append('username', `${message_content.from.name} (${message_content.from.address})`.substring(0, 80)); //fit in discord name limits
+		} else {
+			body.append('username', message_content.from?.address ?? message.from)
+		}
 		let maybe_avatar_url = await get_bimi_logo(message.from.split('@').at(-1) ?? '');
 		if (maybe_avatar_url != null) {
-			console.info('Retrieved BIMI url');
 			body.append('avatar_url', maybe_avatar_url);
-		} else {
-			console.info('No BIMI url resolved');
 		}
-		//populate body
-		let content = '';
-		for await (const chunk of message.raw) content += String.fromCharCode(...chunk);
-		console.info('Finished collecting message content');
-		//if everything fits in one message:
-		if (content.length < MAX_MSG_LEN) {
-			console.info('Content fits in one message');
-			body.append('content', content);
-		} else if (content.length < MAX_FILE_SIZE) {
-			//if everthing fits in one attachment
-			console.info('Content fits in one attachment');
-			body.append('content', content.substring(0, 500) + '[...]\n-# Full content attached');
-			body.append('message_content.txt', new Blob([content]));
-		} else {
-			//fit as much as we can
-			console.info('Truncated content');
-			body.append('content', '## Size limit exceeded! Truncated message attached');
-			body.append('files[0]', content.substring(0, MAX_FILE_SIZE));
+
+		if (!message_content.text && message_content.html) {
+			body_text += (message_content.html.length > MAX_FILE_SIZE) ? "\n-# Truncated HTML attached" : "\n-# Full HTML attached"
+			body.append("content", body_text);
+			body.append("email.html", new Blob([message_content.html.substring(0, MAX_FILE_SIZE)]));
+		}
+		else if (message_content.text) {
+			if (body_text.length + message_content.text.length + 1 > MAX_MSG_LEN) {
+				body_text += (message_content.text.length > MAX_FILE_SIZE) ? "\n-# Truncated text attached" : "\n-# Full text attached"
+				body.append("content", body_text);
+				body.append("email.txt", new Blob([message_content.text.substring(0, MAX_FILE_SIZE)]));
+			} else {
+				body_text += "\n" + message_content.text;
+				body.append("content", body_text);
+			}
 		}
 
 		const DISCORD_REQ = new Request(env.DISCORD_WEBHOOK_URL + '?wait=true', {
@@ -46,13 +49,6 @@ export default {
 			body: body,
 		});
 		let res = await fetch(DISCORD_REQ);
-		console.log(`Request finished with ${res.status} ${res.statusText}`);
-		console.debug(
-			`${await (async () => {
-				let s = '';
-				for await (const chunk of res.body ?? '') s += String.fromCharCode(...chunk);
-				return s;
-			})()}`,
-		);
+		if (res.status != 200) console.warn(`Request finished with ${res.status} ${res.statusText}`);
 	},
 } satisfies ExportedHandler<Env>;
